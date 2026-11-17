@@ -39,7 +39,7 @@ file).
 | `--fields TYPE` | Field generation; may be given several times. `macro` generates the Pos/Mask sections, `enum` the enumerated-value sections, `struct`/`struct-ansic` are accepted for compatibility (structures are always generated). Default: `macro` and `enum`. |
 | `--license-file FILE` | Use `FILE` as the header comment of the generated file. |
 | `--create-folder` | Create the output directory if it does not exist. |
-| `--quiet` | Do not write progress messages to the console. |
+| `--quiet` | Do not write progress messages to the console (errors are still reported on stderr). |
 | `-v`, `--verbose` | Print extra progress information. |
 | `-b`, `--log FILE` | Write the diagnostics to `FILE` instead of stdout. |
 | `--suppress-warnings` | Do not print warnings. |

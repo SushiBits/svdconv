@@ -2066,12 +2066,17 @@ def main(argv=None):
             return 1
 
     def log(message):
+        """Write a diagnostic message; errors are never suppressed."""
+        is_error = message.startswith("ERROR")
         if args.suppress_warnings and message.startswith("WARNING"):
             return
         if log_handle is not None:
             log_handle.write(message + "\n")
             log_handle.flush()
-        if not args.quiet:
+        if is_error:
+            sys.stderr.write(message + "\n")
+            sys.stderr.flush()
+        elif not args.quiet:
             sys.stdout.write(message + "\n")
             sys.stdout.flush()
 
