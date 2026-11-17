@@ -1,0 +1,214 @@
+# Development notes (train of thought)
+
+This file records how `svdconv.py` came to be, what was learned from the
+reference implementation, and the rules that were reverse-engineered from its
+output. It is meant as an engineering log, not as user documentation — see
+[README.md](README.md) for that.
+
+## 1. The request
+
+> Recreate the SVD header generator I use in embedded development:
+> input is an XML file following `check/CMSIS-SVD.xsd`, output is a device
+> header with all register and bit-field definitions. The reference
+> implementation is `C:\Keil_v5\UV4\SVDConv.exe`; use it as an oracle. The
+> program must be Python, cross-OS portable, freely distributable, and shipped
+> with three SVD/header pairs under `check/` that were produced with
+>
+> ```
+> $(SVDCONV) $< -o $(dir $@) --generate=header --fields=macro --fields=enum
+> ```
+
+The three reference pairs are LPC2103 (CPU "other"), LKS32MC03x (Cortex-M0) and
+MSPM0L130X (Cortex-M0+). Together they cover clusters, unions, derived
+peripherals, register arrays, mixed 8/16/32-bit register sizes, enumerated
+values, and long wrapped descriptions.
+
+## 2. Plan
+
+1. Read the XSD to bound the feature space.
+2. Characterise SVDConv's output format *precisely* (columns, blank lines,
+   wrapping, padding rules) from the three reference headers.
+3. Probe the oracle with synthetic SVDs for anything the references do not
+   show (empty enums, unusual dims, CPU variants, error paths).
+4. Write a single-file converter, then iterate with a diff harness until the
+   generated files are byte-identical to the references.
+5. Document, test, commit.
+
+The key decision was to aim for **byte-identical output**. Anything less makes
+it impossible to tell a formatting bug from an intentional difference, and the
+reference headers are already in the repository as a golden baseline.
+
+## 3. What the oracle told us
+
+The oracle is happy to run on synthetic input, which made it possible to pin
+down details that the three real devices do not exercise. The probes live in
+`.probe/` while working (they are not part of the final tree); each probe is a
+hand-written SVD plus the header SVDConv produced for it.
+
+Useful invocations:
+
+```console
+C:\Keil_v5\UV4\SVDConv.exe PROBE.svd -o out --generate=header --fields=macro --fields=enum
+```
+
+Things that the oracle made obvious early on:
+
+* The output file is named after the `<name>` of the device, not after the
+  input file (`RENAMED.svd` still produced `PROBE.h`).
+* The header banner contains the absolute path of the SVD, the absolute path
+  of the generated file, the current date and the modification time of the
+  SVD. These four lines are the only non-deterministic part of the output.
+* `--generate=partition`/`SDF` produce completely different artifacts; only
+  `header` matters here.
+* Diagnostics are printed to stdout (with `-b` optionally mirrored to a file)
+  and the exit code is 2 as soon as an error was detected, even though the
+  header is still written.
+
+## 4. Reverse-engineered layout rules
+
+Every rule below was confirmed by measuring the reference headers and by
+probing the oracle; several of them are surprising and cannot be guessed from
+the CMSIS specification.
+
+### Lines and columns
+
+| Element | Rule |
+| --- | --- |
+| Line width | 129 characters, ` */` right-aligned at the end |
+| Trailing comment | starts at column 48 |
+| Bit macro | `#define <NAME>` (column 8), value at column 42, comment at column 68; if the name is too long the value starts one column after the name and the comment one column after the value |
+| `#define <P>_BASE` | value right-aligned so that it ends at column 48; a single space when the name is too long |
+| Peripheral declaration | name at column 8 padded to 36, cast `((<TYPE>*)` there, base symbol at column 63 (or cast end + 2, whichever is further right) |
+| Enum member | name at column 2, `=` at column 39 (`name.ljust(37)`, one space minimum), `= <value>,` and the comment at column 48 |
+| IRQ member | name at column 2, `=` at column 28, value `%4d`, comment at column 48 |
+| Structure member | two blanks, access macro padded to 5, one blank, type padded to 10 (at least one blank), member name |
+| Union member | four blanks, access padded to 5, one blank, *unpadded* type, one blank, member name |
+| Structure close | `} <TYPE>;` padded to column 48 for the `Size = N (0xN)` comment |
+
+### Comment wrapping
+
+Comments are **not** wrapped at the line width. SVDConv appends words to the
+current line until it has reached at least 59 characters (first line) or 54
+characters (continuation lines), then breaks. The continuation lines are
+indented to the comment text column (53) and only the *last* line is padded so
+that ` */` ends at column 129. Lines that are still too long simply overflow
+past column 129 — that is why the MSPM0 reference header contains lines of 132
+characters.
+
+The number of an interrupt comment is padded to an even number of characters
+(`0  WDT`, `10 SPI`, `100  DMA`), which is the reason for the irregular
+spacing in `IRQn_Type`.
+
+### Section separators
+
+Two kinds of separators exist:
+
+* *Major* separators have exactly 16 `=` on both sides and the title centred
+  in the remaining 91 characters (left-biased when odd).
+* *Minor* separators keep two blanks around the title and distribute the rest
+  of the 119 inner characters as `=` fillers.
+
+Cluster and peripheral structure blocks use the major form; register and
+field headings in the Pos/Mask and Enum sections use the minor form. The
+configuration heading and the "anonymous unions" headings are also minor
+separators, even though they look like major ones at first glance.
+
+### Reserved members
+
+Gaps between registers are filled so that the structure stays naturally
+aligned: first pad to the alignment of the next register using 1- and 2-byte
+reservations, then fill the rest with the largest type that is aligned at the
+current offset. The resulting members are named `RESERVED`, `RESERVED1`, … and
+are emitted without a comment. `compute_layout()` implements exactly this.
+
+Structures are padded at the end to the alignment of their widest member
+(e.g. `DSP_Type` in the LKS32 file ends with a 16-bit `RESERVED1`).
+
+### Structures, typedefs and macro prefixes
+
+* A peripheral structure type is called `<headerStructName>_Type` (or
+  `<NAME>_Type` when there is no `headerStructName`). The heading uses the
+  *peripheral name*, while the Pos/Mask heading uses the *macro prefix*.
+* Cluster structure types are `<peripheral name>_<cluster>_Type` (note: the
+  peripheral *name*, not `headerStructName`), or `<headerStructName>_Type`
+  when the cluster defines one.
+* Pos/Mask macros of a cluster use `<peripheral headerStructName>_<cluster>_…`.
+* Enum identifiers use the peripheral *name* for peripherals and the cluster
+  *type name* for clusters, so a peripheral with `<headerStructName>ADC12` and
+  the name `ADC0` produces `ADC12_GPRCM_PWREN_ENABLE_Pos` macros but
+  `ADC0_GPRCM_PWREN_KEY_Enum` enumerations.
+* Derived peripherals reuse the base structure and do not emit new types,
+  new clusters, new macros or new enumerations.
+* Derived clusters only contribute a member (`__IOM DATETIME_Type ALARM;`).
+
+### Cores
+
+The interrupt table and the `__*_PRESENT` macros depend on `<cpu><name>`:
+
+| Core | Interrupts | Presence macros |
+| --- | --- | --- |
+| `other` | none predefined | the ones declared in the SVD |
+| `CM0` | Reset…SysTick | `__MPU_PRESENT`, `__FPU_PRESENT` |
+| `CM0PLUS` | Reset…SysTick | adds `__VTOR_PRESENT` (always emitted) |
+| `CM3` | Reset…SysTick | `__MPU_PRESENT`, `__FPU_PRESENT` |
+| `CM4`/`CM7` | Reset…SysTick | adds `__FPU_DP`, `__DSP_PRESENT`, caches |
+
+The `__xxx_PRESENT` macros are emitted when the corresponding element is
+present in the SVD (except `__VTOR_PRESENT`, which Cortex-M0+ always gets).
+
+`<revision>rApB</revision>` becomes `0x0A0BU`.
+
+### Enumerated values
+
+* Values that do not fit into the field are dropped with a warning; negative
+  values are dropped as well.
+* 32-bit values are printed as signed integers, so `0xFFFFFFFF` becomes `-1`.
+* Every enumerator carries a trailing comma, including the last one.
+* `<isDefault>true</isDefault>` entries are not emitted.
+* `<headerEnumName>` replaces both the type name (`<name>_Enum`) and the
+  enumerator prefix; `<usage>` only affects the type name (`_R`/`_W`/`_RW`).
+
+## 5. Iteration log
+
+The converter was developed against a diff harness that normalises the four
+non-deterministic header lines and then compares line by line. Diff sizes over
+time (LPC2103 / LKS32 / MSPM0):
+
+```
+4710 / 4122 / 18438   first working version (structure and sections in place)
+1960 /   42 / 10528   after clusters, unions, reserved fill and derivations
+   0 /    0 /  4122   after names, prefixes and enum formatting
+   0 /    0 /   366   after signed enum values and padding rules
+   0 /    0 /     0   final
+```
+
+Bug classes that the diff harness caught, in the order they were fixed:
+
+1. `comment_lines()` returned lists that were appended instead of extended.
+2. A local variable named `prefix` shadowed the new `prefix` parameter of
+   `comment_lines()`, so every comment contained the whole source line.
+3. Missing descriptions: SVDConv falls back to the element name (and to
+   `[0..N]` for `dim` elements).
+4. Cluster member sizes were not known, which corrupted all following
+   reserved gaps.
+5. Enum identifiers used the wrong prefix (see above).
+6. `0x%08XUL` formatting of base addresses; long names need exactly one blank.
+7. The license text of an SVD uses literal `\n` sequences and is indented.
+
+## 6. Deliberate deviations
+
+* SVDConv emits invalid C (and sometimes loops for a very long time) on
+  unaligned registers, registers wider than 32 bits and nested cluster
+  arrays. `svdconv.py` emits an `#error` line, skips the register and
+  continues.
+* Long comment wrapping differs in rare cases.
+* The interrupt-number limit of 240 (0…239) is enforced for every core;
+  SVDConv applies smaller limits depending on the CPU and its own heuristics.
+
+## 7. What I would do next
+
+* Add a `--check` mode that only validates the SVD and reports diagnostics
+  with the same message identifiers SVDConv uses.
+* Support `--generate=partition`/`SDF`.
+* Generate the `_Pos`/`_Msk` macros for CMSIS "struct" style outputs
+  (`--fields=struct`).
