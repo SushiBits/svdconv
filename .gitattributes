@@ -1,0 +1,9 @@
+# Keep the reference data byte-exact: the generated headers are compared
+# against them, and CRLF conversion would break that comparison.
+check/*.h   -text
+check/*.svd -text
+check/*.xsd -text
+
+# Normalise the source files to LF in the repository.
+*.py   text eol=lf
+*.md   text eol=lf
