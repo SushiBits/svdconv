@@ -63,12 +63,15 @@ working, but they have no effect on the generated header.
 ## Use in makefiles
 
 SVDConv returns a non-zero exit status as soon as *anything* is reported,
-warnings included:
+warnings included.  For an SVD whose only defect is one enumerated value that
+does not fit into its field, SVDConv says `Found 0 Error(s) and 1 Warning(s).`
+and still exits with 1:
 
 ```console
 $ SVDConv.exe WARNONLY.svd -o out --generate=header --fields=macro --fields=enum
 *** WARNING M335: WARNONLY.svd (Line 37)
   Value 'TOO_BIG:99' does not fit into field 'MODE' [1..0:2].
+  Ignoring EnumeratedValue : 'TOO_BIG' (see previous message)
 Found 0 Error(s) and 1 Warning(s).
 $ echo $?
 1
@@ -86,7 +89,7 @@ svdconv 1.0.0 - CMSIS-SVD device header generator
 WARNING: value 'TOO_BIG:99' of field 'MODE' does not fit into the field and is ignored
 Generated: out/WARNONLY.h
 
-Found 0 Error(s) and 3 Warning(s).
+Found 0 Error(s) and 1 Warning(s).
 $ echo $?
 0
 ```
