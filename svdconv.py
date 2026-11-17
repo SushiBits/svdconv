@@ -216,11 +216,138 @@ def full_divider():
 
 
 # ---------------------------------------------------------------------------
+# Diagnostics
+# ---------------------------------------------------------------------------
+
+#: Environment variables that GNU make exports into every recipe.
+MAKE_ENVIRONMENT = ("MAKELEVEL", "MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS")
+
+#: Environment variable that turns warnings into a failing exit code.
+WARNINGS_AS_ERRORS_ENV = "SVDCONV_WARNINGS_AS_ERRORS"
+
+#: Values that count as "off" for a boolean environment variable.
+_FALSE_VALUES = ("", "0", "false", "no", "off")
+
+
+def running_under_make(environ=None):
+    """Return True when the process was started by (GNU) make.
+
+    Make exports ``MAKELEVEL`` and ``MAKEFLAGS`` to every recipe, so their
+    presence is a reliable indicator.  The values are not inspected: an
+    empty ``MAKEFLAGS`` still means "inside make".
+    """
+    environ = os.environ if environ is None else environ
+    return any(name in environ for name in MAKE_ENVIRONMENT)
+
+
+def environment_flag(name, environ=None):
+    """Return True when the environment variable *name* is set to a true value."""
+    environ = os.environ if environ is None else environ
+    value = environ.get(name)
+    if value is None:
+        return False
+    return value.strip().lower() not in _FALSE_VALUES
+
+
+class Reporter(object):
+    """Collects diagnostics and decides the process exit code.
+
+    Warnings never influence the exit code unless warnings-as-errors is
+    enabled.  That keeps the tool safe to invoke from a GNU make recipe even
+    for SVD files that contain vendor specific defects; SVDConv returns a
+    non-zero code in that situation and thereby aborts the build.
+
+    Warnings-as-errors is enabled by ``--warnings-as-errors``, by
+    ``--strict`` or by setting ``SVDCONV_WARNINGS_AS_ERRORS`` in the
+    environment.
+    """
+
+    def __init__(self, quiet=False, suppress_warnings=False,
+                 warnings_as_errors=False, log_path=None,
+                 stream=None, error_stream=None):
+        self.quiet = quiet
+        self.suppress_warnings = suppress_warnings
+        self.warnings_as_errors = warnings_as_errors
+        self.stream = stream if stream is not None else sys.stdout
+        self.error_stream = error_stream if error_stream is not None \
+            else sys.stderr
+        self.warning_count = 0
+        self.error_count = 0
+        self._log_handle = None
+        if log_path:
+            self._log_handle = open(log_path, "w", encoding="utf-8")
+
+    # -- output -----------------------------------------------------------
+
+    def close(self):
+        if self._log_handle is not None:
+            self._log_handle.close()
+            self._log_handle = None
+
+    def _emit(self, text, stream, quiet_hides):
+        if self._log_handle is not None:
+            self._log_handle.write(text + "\n")
+            self._log_handle.flush()
+        if quiet_hides and self.quiet:
+            return
+        stream.write(text + "\n")
+        stream.flush()
+
+    def info(self, message):
+        """Progress information; hidden by --quiet."""
+        self._emit(message, self.stream, True)
+
+    def warn(self, message):
+        """A recoverable defect in the SVD; never fatal unless opted in."""
+        self.warning_count += 1
+        if self.suppress_warnings:
+            if self._log_handle is not None:
+                self._log_handle.write("WARNING: %s\n" % message)
+                self._log_handle.flush()
+            return
+        self._emit("WARNING: " + message, self.stream, True)
+
+    def error(self, message):
+        """A problem that prevents generating the header; always fatal."""
+        self.error_count += 1
+        self._emit("ERROR: " + message, self.error_stream, False)
+
+    # -- results ----------------------------------------------------------
+
+    def summary(self):
+        """The one-line summary printed at the end of a run."""
+        return "Found %d Error(s) and %d Warning(s)." % (self.error_count,
+                                                         self.warning_count)
+
+    def summarize(self):
+        """Write the closing summary line to the log and the console."""
+        text = self.summary()
+        if self._log_handle is not None:
+            self._log_handle.write(text + "\n")
+            self._log_handle.flush()
+        if not self.quiet:
+            self.stream.write("\n" + text + "\n")
+            self.stream.flush()
+        elif self.exit_code != 0:
+            # Explain a failure that --quiet would otherwise hide.
+            self.error_stream.write(text + "\n")
+            self.error_stream.flush()
+
+    @property
+    def exit_code(self):
+        if self.error_count:
+            return 2
+        if self.warning_count and self.warnings_as_errors:
+            return 2
+        return 0
+
+
+# ---------------------------------------------------------------------------
 # SVD object model
 # ---------------------------------------------------------------------------
 
 class SvdError(Exception):
-    """Raised when an SVD file cannot be converted."""
+    """Raised when an SVD file cannot be read or is not an SVD file."""
 
 
 class Element(object):
@@ -927,11 +1054,9 @@ class Model(object):
       in which they have to be emitted.
     """
 
-    def __init__(self, device, log=None):
+    def __init__(self, device, reporter=None):
         self.device = device
-        self.log = log or (lambda *args: None)
-        self.warnings = []
-        self.errors = []
+        self.reporter = reporter if reporter is not None else Reporter()
         self.peripheral_nodes = {}
         for per in device.peripherals:
             self.peripheral_nodes.setdefault(per.name, per)
@@ -945,12 +1070,8 @@ class Model(object):
     # -- diagnostics ------------------------------------------------------
 
     def warn(self, message):
-        self.warnings.append(message)
-        self.log("WARNING: " + message)
-
-    def error(self, message):
-        self.errors.append(message)
-        self.log("ERROR: " + message)
+        """Report a recoverable defect; the header is still generated."""
+        self.reporter.warn(message)
 
     # -- resolution helpers ------------------------------------------------
 
@@ -962,13 +1083,15 @@ class Model(object):
         node.text = text
 
     def _resolve_peripheral(self, per, seen=None):
-        """Return a dict with the effective attributes of *per*."""
+        """Return a dict with the effective attributes of *per*.
+
+        Broken ``derivedFrom`` references (unknown target or a cycle) are
+        reported as warnings; the peripheral is then treated as if it had no
+        base peripheral, so that a defective vendor SVD still converts.
+        """
         if seen is None:
             seen = set()
-        if per.name in seen:
-            raise SvdError("circular derivedFrom chain at peripheral '%s'"
-                           % per.name)
-        seen.add(per.name)
+        seen = seen | {per.name}
         data = {
             "name": per.name,
             "node": per,
@@ -985,9 +1108,12 @@ class Model(object):
         }
         if per.derived_from:
             base_node = self.peripheral_nodes.get(per.derived_from)
-            if base_node is None:
-                self.error("peripheral '%s' derives from unknown peripheral "
-                           "'%s'" % (per.name, per.derived_from))
+            if per.derived_from in seen:
+                self.warn("peripheral '%s' has a circular derivedFrom chain "
+                          "via '%s'" % (per.name, per.derived_from))
+            elif base_node is None:
+                self.warn("peripheral '%s' derives from unknown peripheral "
+                          "'%s'" % (per.name, per.derived_from))
             else:
                 base = self._resolve_peripheral(base_node, seen)
                 for key in ("description", "size", "access",
@@ -1310,7 +1436,7 @@ class Generator(object):
     """Renders the device header."""
 
     def __init__(self, model, svd_path, out_name, license_text=None,
-                 log=None, fields=("macro", "enum"), out_path=None):
+                 fields=("macro", "enum"), out_path=None):
         self.model = model
         self.fields = set(fields)
         self.out_display_path = display_path(out_path or out_name)
@@ -1319,15 +1445,15 @@ class Generator(object):
         self.out_name = out_name
         self.license_text = license_text or self.device.license_text \
             or RECOMMENDED_LICENSE
-        self.log = log or (lambda *args: None)
+        self.reporter = model.reporter
         self.lines = []
         cpu = self.device.cpu
         self.cpu_name = cpu.name.strip() if cpu is not None else ""
         self.core, self.core_file = resolve_core(self.cpu_name)
         if self.cpu_name and not is_known_core(self.cpu_name):
-            self.log("CPU '%s' is not a known CMSIS core: using the 'other' "
-                     "core profile and core_%s.h"
-                     % (self.cpu_name, self.core_file))
+            self.reporter.info(
+                "CPU '%s' is not a known CMSIS core: using the 'other' core "
+                "profile and core_%s.h" % (self.cpu_name, self.core_file))
         self.has_unions = self._detect_unions()
 
     # -- helpers ----------------------------------------------------------
@@ -1465,8 +1591,9 @@ class Generator(object):
                 if value < 0:
                     continue
                 if value >= MAX_INTERRUPTS:
-                    self.log("WARNING: interrupt '%s' (%d) exceeds the "
-                             "maximum interrupt number" % (name, value))
+                    self.reporter.warn("interrupt '%s' (%d) exceeds the "
+                                       "maximum interrupt number"
+                                       % (name, value))
                     continue
                 full = name + "_IRQn"
                 if full in seen or value in used_values:
@@ -1589,8 +1716,8 @@ class Generator(object):
         self.emit()
         core_header = "core_%s.h" % self.core_file
         self.emit_all(comment_lines('#include "%s"' % core_header,
-                                "%s processor and core peripherals"
-                                % self.core["display"]))
+                                    "%s processor and core peripherals"
+                                    % self.core["display"]))
         system_header = self.device.header_system_filename or \
             ("system_%s" % self.device.name)
         self.emit_all(comment_lines('#include "%s.h"' % system_header,
@@ -2027,8 +2154,12 @@ def build_parser():
                         help="write diagnostics to FILE")
     parser.add_argument("--suppress-warnings", action="store_true",
                         help="suppress all warnings")
+    parser.add_argument("--warnings-as-errors", action="store_true",
+                        help="exit with a non-zero code when warnings were "
+                             "reported (also enabled by --strict and by the "
+                             "%s environment variable)" % WARNINGS_AS_ERRORS_ENV)
     parser.add_argument("--strict", action="store_true",
-                        help="strict error checking")
+                        help="strict error checking: treat warnings as errors")
     # SVDConv compatibility switches that do not affect header generation.
     for flag, metavar in (("--suppress-path", None),
                           ("--show-missingEnums", None),
@@ -2052,19 +2183,26 @@ def build_parser():
     return parser
 
 
-def convert(path, args, log):
-    """Convert a single SVD file; returns the process exit code."""
+def convert(path, args, reporter):
+    """Convert a single SVD file, reporting all diagnostics to *reporter*."""
     try:
         device = parse_svd(path)
     except SvdError as exc:
-        log("ERROR: %s" % exc)
-        return 2
+        reporter.error(str(exc))
+        return
     outdir = args.outdir or os.path.dirname(os.path.abspath(path))
     if args.create_folder and not os.path.isdir(outdir):
-        os.makedirs(outdir, exist_ok=True)
+        try:
+            os.makedirs(outdir, exist_ok=True)
+        except OSError as exc:
+            reporter.error("cannot create '%s': %s" % (outdir, exc))
+            return
     if not os.path.isdir(outdir):
-        log("ERROR: output directory '%s' does not exist" % outdir)
-        return 2
+        reporter.error("output directory '%s' does not exist" % outdir)
+        return
+    if not device.name:
+        reporter.error("'%s' has no <device><name> element" % path)
+        return
     out_name = device.name + ".h"
     out_path = os.path.join(outdir, out_name)
     license_text = None
@@ -2073,32 +2211,28 @@ def convert(path, args, log):
             with open(args.license_file, "r", encoding="utf-8") as handle:
                 license_text = handle.read()
         except OSError as exc:
-            log("ERROR: cannot read license file: %s" % exc)
-            return 1
+            reporter.error("cannot read license file '%s': %s"
+                           % (args.license_file, exc))
+            return
     if args.verbose:
-        log("Input:      %s" % os.path.abspath(path))
-        log("Device:     %s %s" % (device.name, device.version))
-        log("Output:     %s" % os.path.abspath(out_path))
-    model = Model(device, log)
-    generator = Generator(model, path, out_name, license_text, log,
+        reporter.info("Input:      %s" % os.path.abspath(path))
+        reporter.info("Device:     %s %s" % (device.name, device.version))
+        reporter.info("Output:     %s" % os.path.abspath(out_path))
+    model = Model(device, reporter)
+    generator = Generator(model, path, out_name, license_text,
                           args.fields, out_path)
     if args.verbose:
-        log("Peripherals: %d (%d structure types)"
-            % (len(model.peripherals), len(model.peripheral_blocks)))
-        log("Clusters:    %d" % len(model.cluster_blocks))
+        reporter.info("Peripherals: %d (%d structure types)"
+                      % (len(model.peripherals), len(model.peripheral_blocks)))
+        reporter.info("Clusters:    %d" % len(model.cluster_blocks))
     text = generator.render()
     try:
         with open(out_path, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
     except OSError as exc:
-        log("ERROR: cannot write '%s': %s" % (out_path, exc))
-        return 2
-    if not args.quiet:
-        log("Generated: %s" % out_path)
-    if model.errors:
-        log("Found %d error(s)." % len(model.errors))
-        return 2
-    return 0
+        reporter.error("cannot write '%s': %s" % (out_path, exc))
+        return
+    reporter.info("Generated: %s" % out_path)
 
 
 def main(argv=None):
@@ -2109,44 +2243,33 @@ def main(argv=None):
     if not args.fields:
         args.fields = ["macro", "enum"]
 
-    log_handle = None
-    if args.log:
-        try:
-            log_handle = open(args.log, "w", encoding="utf-8")
-        except OSError as exc:                          # pragma: no cover
-            sys.stderr.write("ERROR: cannot open log file: %s\n" % exc)
-            return 1
+    under_make = running_under_make()
+    warnings_as_errors = (args.warnings_as_errors or args.strict
+                          or environment_flag(WARNINGS_AS_ERRORS_ENV))
 
-    def log(message):
-        """Write a diagnostic message; errors are never suppressed."""
-        is_error = message.startswith("ERROR")
-        if args.suppress_warnings and message.startswith("WARNING"):
-            return
-        if log_handle is not None:
-            log_handle.write(message + "\n")
-            log_handle.flush()
-        if is_error:
-            sys.stderr.write(message + "\n")
-            sys.stderr.flush()
-        elif not args.quiet:
-            sys.stdout.write(message + "\n")
-            sys.stdout.flush()
-
-    if not args.quiet:
-        sys.stdout.write("%s %s - CMSIS-SVD device header generator\n\n"
-                         % (PROGRAM, VERSION))
-
-    status = 0
     try:
+        reporter = Reporter(quiet=args.quiet,
+                            suppress_warnings=args.suppress_warnings,
+                            warnings_as_errors=warnings_as_errors,
+                            log_path=args.log)
+    except OSError as exc:
+        sys.stderr.write("ERROR: cannot open log file: %s\n" % exc)
+        return 2
+
+    try:
+        if not args.quiet:
+            sys.stdout.write("%s %s - CMSIS-SVD device header generator\n"
+                             % (PROGRAM, VERSION))
+            if under_make:
+                sys.stdout.write("Running under make: warnings do not fail "
+                                 "the build.\n")
+            sys.stdout.write("\n")
         for path in args.input:
-            result = convert(path, args, log)
-            status = max(status, result)
-            if result != 0 and len(args.input) > 1:
-                continue
+            convert(path, args, reporter)
+        reporter.summarize()
     finally:
-        if log_handle is not None:
-            log_handle.close()
-    return status
+        reporter.close()
+    return reporter.exit_code
 
 
 if __name__ == "__main__":
