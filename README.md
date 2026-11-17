@@ -57,8 +57,8 @@ working, but they have no effect on the generated header.
 | Code | Meaning |
 | --- | --- |
 | `0` | The header was generated. |
-| `1` | A command line argument was wrong (see `--help`). |
-| `2` | The SVD could not be read or generated, or errors were detected. |
+| `1` | An input or output file could not be opened (SVD, license file, log file). |
+| `2` | Wrong command line arguments, or the SVD could not be parsed or converted. |
 
 ## Example
 
@@ -68,6 +68,9 @@ svdconv 1.0.0 - CMSIS-SVD device header generator
 
 Generated: include/LPC2103.h
 ```
+
+More than one SVD file may be given; every device is converted in turn and the
+exit code is the worst (highest) one.
 
 ## What is generated
 
