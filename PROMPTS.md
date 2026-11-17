@@ -230,8 +230,8 @@ complete and correct. The redesign:
   `derivedFrom`, values that do not fit, interrupts out of range, impossible
   register sizes.
 * `Reporter` owns the counters and the exit code: errors always fail,
-  warnings only fail when `--strict`, `--warnings-as-errors` or
-  `SVDCONV_WARNINGS_AS_ERRORS=1` ask for it.
+  warnings only fail when `-Werror` (alias `--warnings-as-errors`),
+  `--strict` or `SVDCONV_WARNINGS_AS_ERRORS=1` ask for it.
 * A closing `Found N Error(s) and M Warning(s).` line (as SVDConv prints it)
   always tells the reader what happened, and is repeated on stderr when
   `--quiet` would otherwise swallow a failing run.
@@ -351,4 +351,35 @@ warning, because describing a non-CMSIS core is a valid use of the format.
 
    Responses: sections 7 and 8 of this document describe what was changed and
    the oracle evidence that motivated it.
+
+5. Third iteration request (verbatim):
+
+   > Two more fixes:
+   >
+   > * --warnings-as-errors ehh too long. This one looks better: -Werror.
+   > * Pylance is screaming at me. Silence it.
+
+   What was done:
+
+   * The switch is now `-Werror` (gcc style); the long spelling stays as an
+     alias and `--strict`/`SVDCONV_WARNINGS_AS_ERRORS` keep working.
+   * Pylance (analysis mode "standard") reported six problems in
+     `svdconv.py`, all fixed in the code rather than silenced (commit
+     "chore: fix the problems Pylance reports"):
+       - `Field.width` subtracted `self.lsb` whose type was `int | None`;
+         `lsb` now returns `int` and both properties are annotated.
+       - `RegisterInfo.cluster_block`/`cluster_type_name` and
+         `PeripheralInfo.svd_name`/`base_address` were created on the fly,
+         so the inferred types were `None`/unknown.  They are now declared
+         in the constructors (the two peripheral attributes are constructor
+         arguments), which also removed three duplicate assignments in
+         `Model._build`.
+       - two hints: an unused `entries` local and an unused `metavar` loop
+         variable.
+   * `from __future__ import annotations` was not needed (the few
+     annotations are plain or quoted strings), so it was dropped; the
+     documented minimum is now Python 3.7, which the test suite already
+     required for `subprocess.run(capture_output=...)`.
+   * `workspace/diagnostic` reports zero items for the whole workspace, the
+     31 tests pass and the three reference headers are still byte-identical.
 

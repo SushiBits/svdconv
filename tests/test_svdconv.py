@@ -182,6 +182,10 @@ class CommandLineTest(unittest.TestCase):
         result = run_tool(["x.svd", "--generate=partition"])
         self.assertNotEqual(result.returncode, 0)
 
+    def test_werror_is_documented_in_help(self):
+        result = run_tool(["--help"])
+        self.assertIn("-Werror", result.stdout)
+
     def test_device_without_name_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "noname.svd")
@@ -327,8 +331,13 @@ class MakeSafetyTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("WARNING", result.stdout)
 
-    def test_warnings_as_errors_switch(self):
-        result = run_tool([self.svd, "-o", self.tmp, "--warnings-as-errors"])
+    def test_werror_turns_warnings_into_errors(self):
+        result = run_tool([self.svd, "-o", self.tmp, "-Werror"])
+        self.assertEqual(result.returncode, 2)
+
+    def test_warnings_as_errors_spelling_is_accepted(self):
+        result = run_tool([self.svd, "-o", self.tmp,
+                           "--warnings-as-errors"])
         self.assertEqual(result.returncode, 2)
 
     def test_warnings_as_errors_environment(self):

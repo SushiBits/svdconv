@@ -16,7 +16,7 @@ with a byte-for-byte identical result (see [Verification](#verification)).
 
 ## Requirements
 
-* Python 3.6 or newer.
+* Python 3.7 or newer.
 * No third-party packages — only the Python standard library is used, so the
   tool runs on Windows, Linux and macOS alike.
 
@@ -43,8 +43,8 @@ file).
 | `-v`, `--verbose` | Print extra progress information. |
 | `-b`, `--log FILE` | Write the diagnostics to `FILE` instead of stdout. |
 | `--suppress-warnings` | Do not print warnings (they are still counted). |
-| `--warnings-as-errors` | Exit with a non-zero code when warnings were reported. |
-| `--strict` | Strict error checking: same as `--warnings-as-errors`. |
+| `-Werror` | Treat warnings as errors: exit with a non-zero code when warnings were reported. |
+| `--strict` | Strict error checking: same as `-Werror`. |
 | `--version` | Print the program version and exit. |
 | `-h`, `--help` | Print the help text and exit. |
 
@@ -58,7 +58,7 @@ working, but they have no effect on the generated header.
 | Code | Meaning |
 | --- | --- |
 | `0` | The header was generated — **including when warnings were reported**. |
-| `2` | A fatal error (unreadable SVD, missing `<device><name>`, unwritable output), wrong command line arguments, or warnings while `--warnings-as-errors` is in effect. |
+| `2` | A fatal error (unreadable SVD, missing `<device><name>`, unwritable output), wrong command line arguments, or warnings while `-Werror` is in effect. |
 
 ## Use in makefiles
 
@@ -98,8 +98,8 @@ Warnings are still printed and summarized, so nothing is hidden. To get the
 strict SVDConv behaviour back — for example in a CI job that should reject
 defective descriptions — use one of:
 
+* `-Werror` (the long spelling `--warnings-as-errors` is accepted as well)
 * `--strict`
-* `--warnings-as-errors`
 * `SVDCONV_WARNINGS_AS_ERRORS=1` in the environment
 
 When the tool detects that it was started by make (`MAKELEVEL` or `MAKEFLAGS`
@@ -226,7 +226,7 @@ they are bugs of the original tool, break `make`, or produce unusable C code:
 * **Exit code**: SVDConv returns non-zero when it only reported warnings
   (`Found 0 Error(s) and 1 Warning(s).` still exits with 1), which aborts a
   GNU make recipe. `svdconv.py` exits with 0 in that case and offers
-  `--strict`/`--warnings-as-errors`/`SVDCONV_WARNINGS_AS_ERRORS` to opt in.
+  `-Werror`/`--strict`/`SVDCONV_WARNINGS_AS_ERRORS` to opt in.
 * **Unknown CPU names**: SVDConv rejects names with a `-` (`ARM7TDMI-S`) and
   silently falls back to Cortex-M3 for any unknown name. `svdconv.py` accepts
   any string, treats it as an alias of `other` and uses the given name for

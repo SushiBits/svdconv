@@ -2153,9 +2153,11 @@ def build_parser():
                         help="write diagnostics to FILE")
     parser.add_argument("--suppress-warnings", action="store_true",
                         help="suppress all warnings")
-    parser.add_argument("--warnings-as-errors", action="store_true",
-                        help="exit with a non-zero code when warnings were "
-                             "reported (also enabled by --strict and by the "
+    parser.add_argument("-Werror", "--warnings-as-errors",
+                        dest="warnings_as_errors", action="store_true",
+                        help="treat warnings as errors, i.e. exit with a "
+                             "non-zero code when warnings were reported "
+                             "(also enabled by --strict and by the "
                              "%s environment variable)" % WARNINGS_AS_ERRORS_ENV)
     parser.add_argument("--strict", action="store_true",
                         help="strict error checking: treat warnings as errors")
