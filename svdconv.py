@@ -704,6 +704,9 @@ class RegisterInfo(object):
     """A register instance (after ``dim`` expansion)."""
 
     is_cluster = False
+    cluster_block = None        # BlockInfo of a cluster member
+    cluster_type_name = None    # structure of a derived cluster member
+    unsupported = False         # wider than 32 bits
 
     def __init__(self, name, description, offset, size, access, fields,
                  array=0, indices=None):
@@ -834,7 +837,7 @@ def compute_layout(registers):
     entries = []
     groups = []
     for reg in registers:
-        if getattr(reg, "unsupported", False):
+        if reg.unsupported:
             groups.append(("error",
                            "  #error \"Register '%s' is wider than 32 bits\""
                            % reg.name))
@@ -1725,9 +1728,9 @@ class Generator(object):
 
     def member_line(self, member, indent=2, align=True):
         access = access_macro(member.access)
-        if getattr(member, "cluster_block", None) is not None:
+        if member.cluster_block is not None:
             type_name = member.cluster_block.type_name + "_Type"
-        elif getattr(member, "cluster_type_name", None):
+        elif member.cluster_type_name:
             type_name = member.cluster_type_name + "_Type"
         else:
             type_name = c_type(member.size)
@@ -1743,9 +1746,10 @@ class Generator(object):
 
     def layout(self, registers):
         """Return the struct member layout of *registers* and the size."""
+        raw, size = compute_layout(registers)
         entries = []
         reserved = 0
-        for entry in compute_layout(registers)[0]:
+        for entry in raw:
             if entry[0] != "reserved":
                 entries.append(entry)
                 continue
@@ -1756,7 +1760,7 @@ class Generator(object):
             entries.append(("reserved",
                             "  __IM  %-10s%s%s;" % (c_type(bits), name,
                                                     count_text)))
-        return entries, compute_layout(registers)[1]
+        return entries, size
 
     # -- address map and declarations --------------------------------------
 
