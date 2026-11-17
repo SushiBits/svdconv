@@ -66,7 +66,7 @@ MINIMAL_SVD = """\
   <version>1.0</version>
   <description>{name} device</description>
   <cpu>
-    <name>CM0</name>
+    <name>{cpu}</name>
     <revision>r0p0</revision>
     <endian>little</endian>
     <fpuPresent>false</fpuPresent>
@@ -102,7 +102,7 @@ class LayoutTest(unittest.TestCase):
     """Struct layout rules: reservations, unions and end padding."""
 
     def convert(self, registers, name="TEST"):
-        svd = MINIMAL_SVD.format(name=name, registers=registers)
+        svd = MINIMAL_SVD.format(name=name, registers=registers, cpu="CM0")
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, name + ".svd")
             with open(path, "w", encoding="utf-8") as handle:
@@ -157,6 +157,60 @@ class LayoutTest(unittest.TestCase):
         self.assertIn("(0xcUL)", header)
         self.assertIn("} PER_CTRL_MODE_Enum;", header)
         self.assertIn("PER_CTRL_MODE_ON", header)
+
+
+class CpuNameTest(unittest.TestCase):
+    """Any string in <cpu> must be accepted."""
+
+    def header_for(self, cpu):
+        svd = MINIMAL_SVD.format(name="CPU", cpu=cpu,
+                                 registers=register("R", "0x0"))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "CPU.svd")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(svd)
+            result = run_tool([path, "-o", tmp, "--quiet"])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with open(os.path.join(tmp, "CPU.h"), encoding="utf-8") as handle:
+                return handle.read()
+
+    def test_known_core_is_unchanged(self):
+        header = self.header_for("CM3")
+        self.assertIn('#include "core_cm3.h"', header)
+        self.assertIn("#define __CM3_REV", header)
+        self.assertIn("Configuration of the ARM Cortex-M3 Processor", header)
+
+    def test_core_lookup_ignores_case(self):
+        header = self.header_for("cm0plus")
+        self.assertIn('#include "core_cm0plus.h"', header)
+        self.assertIn("#define __CM0PLUS_REV", header)
+
+    def test_unknown_core_uses_its_name_for_the_include(self):
+        # A hand written core_arm7tdmi-s.h is picked up by name, while the
+        # device keeps the "other" core profile.
+        header = self.header_for("arm7tdmi-s")
+        self.assertIn('#include "core_arm7tdmi-s.h"', header)
+        self.assertIn("Configuration of the arm7tdmi-s Processor", header)
+        self.assertIn("#define __OTHER_REV", header)
+        self.assertNotIn("#define __CM3_REV", header)
+        self.assertNotIn("Reset_IRQn", header)
+
+    def test_riscv_core_name(self):
+        header = self.header_for("RV32IMAC")
+        self.assertIn('#include "core_RV32IMAC.h"', header)
+        self.assertIn("#define __OTHER_REV", header)
+
+    def test_unknown_core_does_not_warn(self):
+        svd = MINIMAL_SVD.format(name="CPU", cpu="RV32IMAC",
+                                 registers=register("R", "0x0"))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "CPU.svd")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(svd)
+            result = run_tool([path, "-o", tmp])
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("WARNING", result.stdout)
+        self.assertIn("RV32IMAC", result.stdout)
 
 
 class CommandLineTest(unittest.TestCase):

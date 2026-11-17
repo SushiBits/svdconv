@@ -660,6 +660,37 @@ CORES = {
                  dsp=False, fpu_dp=False),
 }
 
+#: Case insensitive index of :data:`CORES`.
+CORE_INDEX = {name.upper(): info for name, info in CORES.items()}
+
+
+def resolve_core(name):
+    """Map an SVD ``<cpu><name>`` to a core profile and include file name.
+
+    Recognised CMSIS cores return their own profile.  Any other string is
+    treated as an alias of the generic ``other`` core (no architectural
+    interrupt numbers, same presence macros), but keeps the name from the
+    SVD for the generated ``#include "core_<name>.h"`` and for the section
+    headings.  That makes it possible to use non-CMSIS cores such as ARM7TDMI
+    or a RISC-V implementation with a hand written ``core_<name>.h``.
+
+    Returns ``(profile, core_file)``.
+    """
+    name = (name or "").strip()
+    info = CORE_INDEX.get(name.upper())
+    if info is not None:
+        return dict(info), info["core"]
+    if not name:
+        return dict(CORES["other"]), CORES["other"]["core"]
+    profile = dict(CORES["other"])
+    profile["display"] = name
+    return profile, name
+
+
+def is_known_core(name):
+    """Return True when *name* is one of the CMSIS cores in :data:`CORES`."""
+    return (name or "").strip().upper() in CORE_INDEX
+
 
 # ---------------------------------------------------------------------------
 # Intermediate model
@@ -1290,8 +1321,13 @@ class Generator(object):
             or RECOMMENDED_LICENSE
         self.log = log or (lambda *args: None)
         self.lines = []
-        self.cpu_name = (self.device.cpu.name if self.device.cpu else "other")
-        self.core = CORES.get(self.cpu_name.upper(), CORES["other"])
+        cpu = self.device.cpu
+        self.cpu_name = cpu.name.strip() if cpu is not None else ""
+        self.core, self.core_file = resolve_core(self.cpu_name)
+        if self.cpu_name and not is_known_core(self.cpu_name):
+            self.log("CPU '%s' is not a known CMSIS core: using the 'other' "
+                     "core profile and core_%s.h"
+                     % (self.cpu_name, self.core_file))
         self.has_unions = self._detect_unions()
 
     # -- helpers ----------------------------------------------------------
@@ -1551,7 +1587,7 @@ class Generator(object):
         self.emit()
         self.emit("/** @} */ /* End of group Configuration_of_CMSIS */")
         self.emit()
-        core_header = "core_%s.h" % self.core["core"]
+        core_header = "core_%s.h" % self.core_file
         self.emit_all(comment_lines('#include "%s"' % core_header,
                                 "%s processor and core peripherals"
                                 % self.core["display"]))
