@@ -1309,9 +1309,6 @@ class Model(object):
         if cluster.derived_from:
             return self._derived_cluster(cluster, block_prefix, path,
                                          base_name)
-        if cluster.dim:
-            self.warn("cluster array '%s' is only expanded as an array"
-                      % cluster.name)
         prefix = block_prefix.get("cluster_prefix") or block_prefix["macro"]
         if cluster.header_struct_name:
             type_name = cluster.header_struct_name

@@ -48,8 +48,11 @@ class ReferenceHeaderTest(unittest.TestCase):
         if not (os.path.exists(svd) and os.path.exists(reference)):
             self.skipTest("%s reference files are not available" % device)
         with tempfile.TemporaryDirectory() as outdir:
-            result = run_tool([svd, "-o", outdir, "--quiet"])
+            result = run_tool([svd, "-o", outdir])
             self.assertEqual(result.returncode, 0, result.stderr)
+            # SVDConv is silent about these devices, so anything we report
+            # would only get in the way of -Werror.
+            self.assertIn("Found 0 Error(s) and 0 Warning(s).", result.stdout)
             generated = os.path.join(outdir, device + ".h")
             self.assertTrue(os.path.exists(generated))
             with open(generated, encoding="utf-8", newline="") as handle:

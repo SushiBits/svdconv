@@ -382,4 +382,11 @@ warning, because describing a non-CMSIS core is a valid use of the format.
      required for `subprocess.run(capture_output=...)`.
    * `workspace/diagnostic` reports zero items for the whole workspace, the
      31 tests pass and the three reference headers are still byte-identical.
+   * Found while re-reading the warning counts: `svdconv.py` warned about
+     every `cluster` that carries a `dim` ("only expanded as an array") while
+     SVDConv accepts those silently and emits the very same array member
+     (MSPM0L130X has three of them, `INT_GROUP`, `DMATRIG`, `DMACHAN`). That
+     made `-Werror` fail on a file SVDConv is happy with, so the warning is
+     gone and the reference test now asserts the closing line is
+     `Found 0 Error(s) and 0 Warning(s).`
 
