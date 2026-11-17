@@ -42,8 +42,9 @@ file).
 | `--quiet` | Do not write progress messages to the console (errors are still reported on stderr). |
 | `-v`, `--verbose` | Print extra progress information. |
 | `-b`, `--log FILE` | Write the diagnostics to `FILE` instead of stdout. |
-| `--suppress-warnings` | Do not print warnings. |
-| `--strict` | Accepted for command line compatibility; warnings are always printed. |
+| `--suppress-warnings` | Do not print warnings (they are still counted). |
+| `--warnings-as-errors` | Exit with a non-zero code when warnings were reported. |
+| `--strict` | Strict error checking: same as `--warnings-as-errors`. |
 | `--version` | Print the program version and exit. |
 | `-h`, `--help` | Print the help text and exit. |
 
@@ -56,9 +57,83 @@ working, but they have no effect on the generated header.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | The header was generated. |
-| `1` | An input or output file could not be opened (SVD, license file, log file). |
-| `2` | Wrong command line arguments, or the SVD could not be parsed or converted. |
+| `0` | The header was generated — **including when warnings were reported**. |
+| `2` | A fatal error (unreadable SVD, missing `<device><name>`, unwritable output), wrong command line arguments, or warnings while `--warnings-as-errors` is in effect. |
+
+## Use in makefiles
+
+SVDConv returns a non-zero exit status as soon as *anything* is reported,
+warnings included:
+
+```console
+$ SVDConv.exe WARNONLY.svd -o out --generate=header --fields=macro --fields=enum
+*** WARNING M335: WARNONLY.svd (Line 37)
+  Value 'TOO_BIG:99' does not fit into field 'MODE' [1..0:2].
+Found 0 Error(s) and 1 Warning(s).
+$ echo $?
+1
+```
+
+Vendor SVD files very often contain such harmless defects, so a make recipe
+using SVDConv aborts even though the header was written correctly.
+`svdconv.py` is **Makefile-safe**: a warning never changes the exit code, only
+a fatal error does. The same input gives:
+
+```console
+$ python3 svdconv.py WARNONLY.svd -o out
+svdconv 1.0.0 - CMSIS-SVD device header generator
+
+WARNING: value 'TOO_BIG:99' of field 'MODE' does not fit into the field and is ignored
+Generated: out/WARNONLY.h
+
+Found 0 Error(s) and 3 Warning(s).
+$ echo $?
+0
+```
+
+Warnings are still printed and summarized, so nothing is hidden. To get the
+strict SVDConv behaviour back — for example in a CI job that should reject
+defective descriptions — use one of:
+
+* `--strict`
+* `--warnings-as-errors`
+* `SVDCONV_WARNINGS_AS_ERRORS=1` in the environment
+
+When the tool detects that it was started by make (`MAKELEVEL` or `MAKEFLAGS`
+is set) it says so in its banner, so a build log makes it obvious that
+warnings are not fatal there.
+
+A minimal rule looks like this:
+
+```make
+%.h: %.svd
+	$(SVDCONV) $< -o $(dir $@) --generate=header --fields=macro --fields=enum
+```
+
+## CPU names
+
+The `<cpu><name>` element may contain **any string**:
+
+* A known CMSIS core (`CM0`, `CM0PLUS`, `CM1`, `CM3`, `CM4`, `CM7`, `CM23`,
+  `CM33`, `CM35P`, `CM52`, `CM55`, `CM85`, `SC000`, `SC300`, `ARMV8MML`,
+  `ARMV8MBL`, `CA5`, `CA7`, `CA9`, `CA15`, `other` — case insensitive) is
+  handled exactly like SVDConv does: the architectural interrupt numbers and
+  the `__*_PRESENT` rules of that core are used and
+  `#include "core_<core>.h"` is emitted.
+* Anything else is treated as an **alias of `other`**: no architectural
+  interrupt numbers, the `other` presence-macro rules and `__OTHER_REV`, but
+  the name from the SVD is used for the include and for the section headings.
+  `<cpu><name>arm7tdmi-s</name>` therefore produces
+
+  ```c
+  #include "core_arm7tdmi-s.h"   /*!< arm7tdmi-s processor and core peripherals */
+  ```
+
+  which allows non-CMSIS cores (ARM7TDMI, RISC-V, vendor DSPs, …) to be
+  described with an SVD and a hand written `core_<name>.h`.
+
+This is a deliberate improvement over SVDConv, which rejects names containing
+`-` and silently falls back to Cortex-M3 for every unknown name.
 
 ## Example
 
@@ -67,10 +142,12 @@ $ python3 svdconv.py LPC2103.svd -o include --create-folder
 svdconv 1.0.0 - CMSIS-SVD device header generator
 
 Generated: include/LPC2103.h
+
+Found 0 Error(s) and 0 Warning(s).
 ```
 
 More than one SVD file may be given; every device is converted in turn and the
-exit code is the worst (highest) one.
+exit code reflects all of them.
 
 ## What is generated
 
@@ -134,20 +211,31 @@ quirks, because existing projects diff their generated headers against it:
 * alternate registers (aliases) and alternate groups
 * `<licenseText>`, `<vendor>`, `<version>`, `<cpu>` and the
   `<...Present>`/`<vendorSystickConfig>` CPU properties
+* any `<cpu><name>` string, including non-CMSIS cores (see
+  [CPU names](#cpu-names))
 * the `<headerSystemFilename>` and `<headerDefinitionsPrefix>` elements
 
 ## Known differences to SVDConv
 
 The following SVDConv behaviours are intentionally *not* reproduced because
-they are bugs of the original tool or produce unusable C code:
+they are bugs of the original tool, break `make`, or produce unusable C code:
 
+* **Exit code**: SVDConv returns non-zero when it only reported warnings
+  (`Found 0 Error(s) and 1 Warning(s).` still exits with 1), which aborts a
+  GNU make recipe. `svdconv.py` exits with 0 in that case and offers
+  `--strict`/`--warnings-as-errors`/`SVDCONV_WARNINGS_AS_ERRORS` to opt in.
+* **Unknown CPU names**: SVDConv rejects names with a `-` (`ARM7TDMI-S`) and
+  silently falls back to Cortex-M3 for any unknown name. `svdconv.py` accepts
+  any string, treats it as an alias of `other` and uses the given name for
+  `#include "core_<name>.h"`.
 * SVDConv emits broken C code (and occasionally runs for hours) for structures
   with unaligned registers, registers wider than 32 bits or nested cluster
   arrays. `svdconv.py` reports these constructs as warnings and skips the
   offending register instead.
 * Negative interrupt numbers and negative enumerated values are reported and
   ignored (SVDConv prints a parse error and drops the value as well).
-* Word wrapping of very long comments differs in rare cases from SVDConv.
+* A `derivedFrom` target that does not exist is a warning in `svdconv.py`
+  (the element is treated as non-derived) and an error in SVDConv.
 * `--generate=partition` and `--generate=SDF` are not implemented.
 
 ## Verifying
@@ -170,7 +258,9 @@ $ python3 -m unittest discover -s tests -v
 ```
 
 `tests/test_svdconv.py` also contains unit tests for the structure layout
-(gap filling, unions, alignment padding) and for the command line interface.
+(gap filling, unions, alignment padding), for the CPU name handling, for the
+exit code rules (including a real GNU make recipe when `make` is available)
+and for the command line interface.
 
 ## Repository layout
 

@@ -205,13 +205,92 @@ Bug classes that the diff harness caught, in the order they were fixed:
 * The interrupt-number limit of 240 (0…239) is enforced for every core;
   SVDConv applies smaller limits depending on the CPU and its own heuristics.
 
-## 7. What I would do next
+## 7. Makefile safety (second iteration)
+
+The first version still exited with 2 for "model errors" such as a
+`derivedFrom` that points at a peripheral which does not exist. Vendor SVD
+files contain those, and a make recipe then dies. Probing the oracle made the
+problem obvious:
+
+```
+$ SVDConv.exe WARNONLY2.svd -o out --generate=header --fields=macro --fields=enum
+*** WARNING M335: WARNONLY2.svd (Line 37)
+  Value 'TOO_BIG:99' does not fit into field 'MODE' [1..0:2].
+Found 0 Error(s) and 1 Warning(s).
+$ echo $?
+1
+```
+
+A *pure warning* therefore aborts the build even though the header is
+complete and correct. The redesign:
+
+* Two severities only. ``ERROR`` means "no header was produced" (unreadable
+  SVD, missing `<device><name>`, unwritable output, bad license file). Every
+  defect in the description itself is a ``WARNING``: unknown or circular
+  `derivedFrom`, values that do not fit, interrupts out of range, impossible
+  register sizes.
+* `Reporter` owns the counters and the exit code: errors always fail,
+  warnings only fail when `--strict`, `--warnings-as-errors` or
+  `SVDCONV_WARNINGS_AS_ERRORS=1` ask for it.
+* A closing `Found N Error(s) and M Warning(s).` line (as SVDConv prints it)
+  always tells the reader what happened, and is repeated on stderr when
+  `--quiet` would otherwise swallow a failing run.
+* `running_under_make()` looks at `MAKELEVEL`/`MAKEFLAGS`/`MFLAGS`/
+  `GNUMAKEFLAGS`; when the tool detects make it states in the banner that
+  warnings will not fail the build. The decision does not depend on the
+  environment though — the default is safe everywhere, so a CI run and a
+  local `make` behave identically.
+* Verified end to end with a real GNU make recipe in WSL2:
+
+  ```
+  === default (must succeed even though DEFECTIVE.svd has defects)
+  make exit: 0
+  === strict (must fail on the defective SVD)
+  make exit: 2
+  === warnings-as-errors from the environment
+  make exit: 2
+  ```
+
+## 8. Arbitrary CPU names (second iteration)
+
+The oracle rejects anything it does not know:
+
+```
+*** ERROR M202: CPUARM7TDMIS.svd (Line 10)
+  Parse error: <name> = 'ARM7TDMI-S'
+*** ERROR M329: CPU Type is not set, using default (Cortex-M3)
+```
+
+and silently maps unknown-but-valid names (`RV32IMAC`, `RISCV`) to Cortex-M3,
+which produces a completely wrong interrupt table for a RISC-V device.
+
+`resolve_core()` therefore works in two steps: a case-insensitive lookup in
+`CORE_INDEX` first, and a fallback that copies the `other` profile but keeps
+the SVD name for `#include "core_<name>.h"` and for the section headings. The
+`__OTHER_REV` macro and the presence-macro policy stay those of `other`, so a
+hand written `core_<name>.h` only has to provide the CMSIS intrinsics, not a
+new set of configuration macros. For the LPC2103 SVD (currently
+`<cpu><name>other</name>`) changing the name to `arm7tdmi-s` now yields:
+
+```c
+/* ============================  Configuration of the arm7tdmi-s Processor and Core Peripherals  ============================= */
+#define __OTHER_REV                 0x0000U     /*!< other Core Revision */
+...
+#include "core_arm7tdmi-s.h"                    /*!< arm7tdmi-s processor and core peripherals */
+```
+
+This is a warning-free downgrade: an unknown name is *informational*, not a
+warning, because describing a non-CMSIS core is a valid use of the format.
+
+## 9. What I would do next
 
 * Add a `--check` mode that only validates the SVD and reports diagnostics
   with the same message identifiers SVDConv uses.
 * Support `--generate=partition`/`SDF`.
 * Generate the `_Pos`/`_Msk` macros for CMSIS "struct" style outputs
   (`--fields=struct`).
+* Optionally avoid rewriting the header when only the `@date` line would
+  change, so that make does not rebuild everything downstream on every run.
 
 ## Appendix: the prompts this work was driven by
 
@@ -256,3 +335,20 @@ Bug classes that the diff harness caught, in the order they were fixed:
    byte-identically on Windows and in WSL2 Ubuntu, the unit tests pass in both
    environments, and the tool was additionally exercised against a dozen
    synthetic SVD files that were fed to SVDConv as an oracle.
+
+4. Second iteration request (verbatim):
+
+   > * Make sure this code is Makefile-safe - that is, SVDConv emits a non-zero
+   >   return code on warnings as well as errors, while vendor SVD often
+   >   contained warnings, and that trips GNU make. If you are not
+   >   Makefile-safe, figure out a way to detect if you are being called within
+   >   make and adjust behavior accordingly.
+   > * A quality of life patch for myself here: allow any string in `<cpu>`. If
+   >   it is not a recognized Cortex series processor, treat it as an alias of
+   >   "other" but when emitting the core_<cpu>.h header use the name I put in
+   >   `<cpu>`. (I am abusing SVD for non Cortex-M CPUs. LPC2103 is already an
+   >   ARM7TDMI-S while a few RISC-V RV32IMAC are in the pipeline.)
+
+   Responses: sections 7 and 8 of this document describe what was changed and
+   the oracle evidence that motivated it.
+
