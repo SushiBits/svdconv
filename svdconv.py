@@ -14,15 +14,13 @@ generated headers are drop-in replacements for the ones produced by::
                 --fields=macro --fields=enum
 
 Only the Python standard library is used, so the program runs on any
-platform that has Python 3.6 or newer.
+platform that has Python 3.7 or newer.
 
 See README.md for the full documentation.
 
 SPDX-License-Identifier: BSD-3-Clause
 Copyright (c) 2026, HIKARU Infotech Shanghai Ltd.
 """
-
-from __future__ import annotations
 
 import argparse
 import copy
@@ -443,7 +441,8 @@ class EnumeratedValues(Element):
 
 class Field(DimElement):
     @property
-    def lsb(self):
+    def lsb(self) -> int:
+        """Least significant bit of the field (0 when it is not declared)."""
         value = self.integer("lsb")
         if value is not None:
             return value
@@ -452,11 +451,13 @@ class Field(DimElement):
             return offset
         bit_range = self.text("bitRange")
         if bit_range:
-            return parse_int(bit_range.strip("[]").split(":")[1])
+            parsed = parse_int(bit_range.strip("[]").split(":")[1])
+            if parsed is not None:
+                return parsed
         return 0
 
     @property
-    def msb(self):
+    def msb(self) -> "int | None":
         value = self.integer("msb")
         if value is not None:
             return value
@@ -470,7 +471,7 @@ class Field(DimElement):
         return None
 
     @property
-    def width(self):
+    def width(self) -> "int | None":
         msb = self.msb
         if msb is None:
             return None
@@ -861,11 +862,6 @@ class EnumInfo(object):
 class RegisterInfo(object):
     """A register instance (after ``dim`` expansion)."""
 
-    is_cluster = False
-    cluster_block = None        # BlockInfo of a cluster member
-    cluster_type_name = None    # structure of a derived cluster member
-    unsupported = False         # wider than 32 bits
-
     def __init__(self, name, description, offset, size, access, fields,
                  array=0, indices=None):
         self.name = name
@@ -876,6 +872,10 @@ class RegisterInfo(object):
         self.fields = fields
         self.array = array
         self.indices = indices or []
+        self.is_cluster = False
+        self.cluster_block: "BlockInfo | None" = None    # cluster structure
+        self.cluster_type_name: "str | None" = None      # derived cluster type
+        self.unsupported = False                         # wider than 32 bits
 
     @property
     def byte_size(self):
@@ -889,7 +889,19 @@ class RegisterInfo(object):
 class BlockInfo(object):
     """A structure type: a peripheral or a cluster."""
 
-    is_cluster = False
+    def __init__(self, type_name, member_prefix, title, description,
+                 offset, registers=(), derived=False):
+        self.type_name = type_name
+        self.member_prefix = member_prefix
+        self.title = title
+        self.description = description
+        self.offset = offset
+        self.registers = list(registers)
+        self.derived = derived
+        self.is_cluster = False
+        self.array = 0
+        self.indices = []
+        self.size = 0
 
     @property
     def macro_title(self):
@@ -901,27 +913,17 @@ class BlockInfo(object):
         """Title used in the Enum section headers."""
         return self.title
 
-    def __init__(self, type_name, member_prefix, title, description,
-                 offset, registers=(), derived=False):
-        self.type_name = type_name
-        self.member_prefix = member_prefix
-        self.title = title
-        self.description = description
-        self.offset = offset
-        self.registers = list(registers)
-        self.derived = derived
-        self.array = 0
-        self.indices = []
-        self.size = 0
-
 
 class PeripheralInfo(BlockInfo):
+    """A peripheral structure type and its declaration macros."""
+
     def __init__(self, type_name, member_prefix, title, description, base,
-                 registers=(), derived=False):
+                 registers=(), derived=False, svd_name="", interrupts=()):
         BlockInfo.__init__(self, type_name, member_prefix, title,
                            description, base, registers, derived)
-        self.base = base
-        self.interrupts = []
+        self.svd_name = svd_name or title
+        self.base_address = base
+        self.interrupts = list(interrupts)
 
 
 # ---------------------------------------------------------------------------
@@ -1338,10 +1340,9 @@ class Model(object):
                           cluster.address_offset or 0, registers)
         block.is_cluster = True
         self._register_block(block)
-        entries, size = compute_layout(block.registers)
-        block.size = size
+        block.size = compute_layout(block.registers)[1]
         info = RegisterInfo(base_name, block.description,
-                            cluster.address_offset or 0, size * 8,
+                            cluster.address_offset or 0, block.size * 8,
                             cluster.access or inner_defaults["access"], [],
                             cluster.dim or 0, cluster.indices())
         info.cluster_block = block
@@ -1399,10 +1400,8 @@ class Model(object):
             info = PeripheralInfo(
                 data["header_struct_name"], data["header_struct_name"].upper(),
                 data["name"], data["description"] or data["name"],
-                data["base"] or 0, registers, bool(data["derived"]))
-            info.svd_name = data["name"]
-            info.base_address = data["base"] or 0
-            info.interrupts = data["interrupts"]
+                data["base"] or 0, registers, bool(data["derived"]),
+                data["name"], data["interrupts"])
             self.peripherals.append(info)
             if not data["derived"]:
                 self._register_block(info)
@@ -2161,11 +2160,8 @@ def build_parser():
     parser.add_argument("--strict", action="store_true",
                         help="strict error checking: treat warnings as errors")
     # SVDConv compatibility switches that do not affect header generation.
-    for flag, metavar in (("--suppress-path", None),
-                          ("--show-missingEnums", None),
-                          ("--allow-suppress-error", None),
-                          ("--under-test", None),
-                          ("--nocleanup", None)):
+    for flag in ("--suppress-path", "--show-missingEnums",
+                 "--allow-suppress-error", "--under-test", "--nocleanup"):
         parser.add_argument(flag, action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("-x", "--diag-suppress", metavar="MSG",
                         action="append", default=[],
