@@ -201,7 +201,7 @@ Bug classes that the diff harness caught, in the order they were fixed:
   unaligned registers, registers wider than 32 bits and nested cluster
   arrays. `svdconv.py` emits an `#error` line, skips the register and
   continues.
-* Long comment wrapping differs in rare cases.
+* A word that is longer than the wrap limit is not split, so such a comment line can overflow the 129 character width exactly like in SVDConv.
 * The interrupt-number limit of 240 (0…239) is enforced for every core;
   SVDConv applies smaller limits depending on the CPU and its own heuristics.
 
@@ -212,3 +212,47 @@ Bug classes that the diff harness caught, in the order they were fixed:
 * Support `--generate=partition`/`SDF`.
 * Generate the `_Pos`/`_Msk` macros for CMSIS "struct" style outputs
   (`--fields=struct`).
+
+## Appendix: the prompts this work was driven by
+
+1. The initial request (verbatim):
+
+   > This folder is called svdconv. I want you to recreate the following tool
+   > I use very frequently in embedded development:
+   >
+   > * Input: an XML file adhering to the XSD in check/CMSIS-SVD.xsd
+   > * Output: a device header including all devices register definitions and
+   >   bitfield definitions.
+   >
+   > The reference implementation of the converter is installed at
+   > C:\Keil_v5\UV4\SVDConv.exe. Feel free to poke it as an oracle. Try to
+   > emulate its command line switches too but this is not a hard requirement.
+   >
+   > The resulting program need to be in Python. It can have dependencies. If
+   > so, please include it as submodules here. Try to make the code cross OS
+   > portable. Use my WSL2 instance for verification if you so desires.
+   >
+   > I have provided three sets of SVD files and outputs under check folder,
+   > all of which outputs of SVDConv with this command line (taken out of
+   > project Makefile):
+   > -$(SVDCONV) $< -o $(dir $@) --generate=header --fields=macro --fields=enum
+   >
+   > Make sure the resulting code can be freely distributed. I am dropping in
+   > my LICENSE.md file here.
+   >
+   > Deliverables:
+   > * svdconv.py - the tool itself
+   > * README.md - Documentation of the tool
+   > * PROMPTS.md - A dump of your train of thought.
+   > * Properly cadenced Git commits with proper messages.
+
+2. Follow-up question and answer about licensing (no LICENSE.md existed in the
+   repository):
+
+   * Question: which license should the project use?
+   * Answer: BSD-3-Clause, copyright "2026 HIKARU Infotech Shanghai Ltd."
+
+3. The result was verified three ways: the reference headers regenerate
+   byte-identically on Windows and in WSL2 Ubuntu, the unit tests pass in both
+   environments, and the tool was additionally exercised against a dozen
+   synthetic SVD files that were fed to SVDConv as an oracle.

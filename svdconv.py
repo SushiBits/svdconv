@@ -368,18 +368,6 @@ class Register(DimElement):
         return self.text("access")
 
     @property
-    def reset_value(self):
-        return self.integer("resetValue")
-
-    @property
-    def reset_mask(self):
-        return self.integer("resetMask")
-
-    @property
-    def alternate_register(self):
-        return self.text("alternateRegister")
-
-    @property
     def derived_from(self):
         return self.node.get("derivedFrom")
 
@@ -488,10 +476,6 @@ class Cpu(Element):
     def vendor_systick_config(self):
         return self.boolean("vendorSystickConfig")
 
-    @property
-    def device_num_interrupts(self):
-        return self.integer("deviceNumInterrupts")
-
     def flag(self, tag):
         return self.boolean(tag)
 
@@ -512,10 +496,6 @@ class Device(Element):
     @property
     def header_system_filename(self):
         return self.text("headerSystemFilename")
-
-    @property
-    def header_definitions_prefix(self):
-        return self.text("headerDefinitionsPrefix") or ""
 
     @property
     def cpu(self):
@@ -1997,6 +1977,22 @@ def build_parser():
                         help="suppress all warnings")
     parser.add_argument("--strict", action="store_true",
                         help="strict error checking")
+    # SVDConv compatibility switches that do not affect header generation.
+    for flag, metavar in (("--suppress-path", None),
+                          ("--show-missingEnums", None),
+                          ("--allow-suppress-error", None),
+                          ("--under-test", None),
+                          ("--nocleanup", None)):
+        parser.add_argument(flag, action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("-x", "--diag-suppress", metavar="MSG",
+                        action="append", default=[],
+                        help="suppress a message id (accepted, ignored)")
+    parser.add_argument("-w", metavar="LEVEL", type=int, default=0,
+                        help="warning level (accepted, ignored)")
+    parser.add_argument("--debug", metavar="KIND", action="append", default=[],
+                        help="debug output kind (accepted, ignored)")
+    parser.add_argument("-n", metavar="FILE", default=None,
+                        help="SFD output file name (accepted, ignored)")
     parser.add_argument("--version", action="version",
                         version="%s %s (CMSIS-SVD header generator, "
                                 "SVDConv %s compatible)"
@@ -2027,9 +2023,17 @@ def convert(path, args, log):
         except OSError as exc:
             log("ERROR: cannot read license file: %s" % exc)
             return 1
+    if args.verbose:
+        log("Input:      %s" % os.path.abspath(path))
+        log("Device:     %s %s" % (device.name, device.version))
+        log("Output:     %s" % os.path.abspath(out_path))
     model = Model(device, log)
     generator = Generator(model, path, out_name, license_text, log,
                           args.fields)
+    if args.verbose:
+        log("Peripherals: %d (%d structure types)"
+            % (len(model.peripherals), len(model.peripheral_blocks)))
+        log("Clusters:    %d" % len(model.cluster_blocks))
     text = generator.render()
     try:
         with open(out_path, "w", encoding="utf-8", newline="\n") as handle:
@@ -2040,6 +2044,7 @@ def convert(path, args, log):
     if not args.quiet:
         log("Generated: %s" % out_path)
     if model.errors:
+        log("Found %d error(s)." % len(model.errors))
         return 2
     return 0
 
@@ -2061,17 +2066,18 @@ def main(argv=None):
             return 1
 
     def log(message):
-        if args.quiet:
-            return
         if args.suppress_warnings and message.startswith("WARNING"):
             return
-        stream = log_handle if log_handle is not None else sys.stdout
-        stream.write(message + "\n")
-        stream.flush()
+        if log_handle is not None:
+            log_handle.write(message + "\n")
+            log_handle.flush()
+        if not args.quiet:
+            sys.stdout.write(message + "\n")
+            sys.stdout.flush()
 
     if not args.quiet:
-        log("%s %s - CMSIS-SVD device header generator" % (PROGRAM, VERSION))
-        log("")
+        sys.stdout.write("%s %s - CMSIS-SVD device header generator\n\n"
+                         % (PROGRAM, VERSION))
 
     status = 0
     try:

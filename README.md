@@ -47,6 +47,11 @@ file).
 | `--version` | Print the program version and exit. |
 | `-h`, `--help` | Print the help text and exit. |
 
+The remaining SVDConv switches (`--suppress-path`, `--show-missingEnums`,
+`--allow-suppress-error`, `--under-test`, `--nocleanup`, `-x/--diag-suppress`,
+`-w`, `--debug` and `-n`) are accepted so that existing build rules keep
+working, but they have no effect on the generated header.
+
 ### Exit codes
 
 | Code | Meaning |
@@ -149,9 +154,9 @@ SVDConv V3.3.46 produced for them:
 
 | Device | SVD | Reference header | Size |
 | --- | --- | --- | --- |
-| LPC2103 | `check/LPC2103.svd` | `check/LPC2103.h` | 1 960 lines |
-| LKS32MC03x | `check/LKS32MC03x.svd` | `check/LKS32MC03x.h` | 4 170 lines |
-| MSPM0L130X | `check/MSPM0L130X.svd` | `check/MSPM0L130X.h` | 27 471 lines |
+| LPC2103 | `check/LPC2103.svd` | `check/LPC2103.h` | 1 959 lines |
+| LKS32MC03x | `check/LKS32MC03x.svd` | `check/LKS32MC03x.h` | 4 169 lines |
+| MSPM0L130X | `check/MSPM0L130X.svd` | `check/MSPM0L130X.h` | 27 470 lines |
 
 The generated files are identical to the references except for the
 `@file`/`@date`/`@note` lines, which contain the current date and the paths of
